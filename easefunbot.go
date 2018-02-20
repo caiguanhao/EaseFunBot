@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -93,6 +94,7 @@ func getPosts() (netEasePosts, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	var posts struct {
 		Posts netEasePosts `json:"tab_list"`
 	}
@@ -179,47 +181,51 @@ func sendPostsToSubscribers() {
 			continue
 		}
 		err = sendMessages(messages, botdata.Subscribers[i].UserID)
-		if err == nil {
-			botdata.Subscribers[i].PostID = latestPosts[0].ID
-			write()
-		} else {
+		if err != nil {
 			log.Println(err)
 		}
+		botdata.Subscribers[i].PostID = latestPosts[0].ID
+		write()
 	}
 }
 
 func sendMessages(messages [][2]string, target int64) (err error) {
 	for _, msg := range messages {
 		imageUrl, imageCaption := msg[0], msg[1]
-		if strings.HasSuffix(imageUrl, "gif") {
-			msg := tgbotapi.NewDocumentUpload(target, nil)
-			msg.FileID = imageUrl
-			msg.UseExisting = true
-			msg.Caption = imageCaption
-			err = sendMessage(msg)
-		} else {
-			msg := tgbotapi.NewPhotoUpload(target, nil)
-			msg.FileID = imageUrl
-			msg.UseExisting = true
-			msg.Caption = imageCaption
-			err = sendMessage(msg)
+		for i := 0; i < 2; i++ {
+			_, err = bot.Send(newMessage(target, imageUrl, imageCaption))
+			if err != nil && strings.Contains(err.Error(), "wrong file identifier/HTTP URL specified") {
+				imageUrl += "?new"
+				_, err = bot.Send(newMessage(target, imageUrl, imageCaption))
+			}
+			if err == nil {
+				break
+			}
 		}
 		if err != nil {
+			bot.Send(tgbotapi.NewMessage(target, "Error: "+err.Error()))
+			log.Println(err)
 			return
 		}
 	}
-	sendMessage(tgbotapi.NewMessage(target, "End of the post. You can /list other posts or visit /help."))
+	bot.Send(tgbotapi.NewMessage(target, "End of the post. You can /list other posts or visit /help."))
 	return
 }
 
-func sendMessage(msg tgbotapi.Chattable) (err error) {
-	for i := 0; i < 3; i++ {
-		_, err = bot.Send(msg)
-		if err == nil {
-			return
-		}
+func newMessage(target int64, _url, caption string) tgbotapi.Chattable {
+	u, err := url.Parse(_url)
+	if err == nil && strings.HasSuffix(u.Path, "gif") {
+		msg := tgbotapi.NewDocumentUpload(target, nil)
+		msg.FileID = _url
+		msg.UseExisting = true
+		msg.Caption = caption
+		return msg
 	}
-	return
+	msg := tgbotapi.NewPhotoUpload(target, nil)
+	msg.FileID = _url
+	msg.UseExisting = true
+	msg.Caption = caption
+	return msg
 }
 
 func read() error {
