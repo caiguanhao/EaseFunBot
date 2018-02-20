@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -35,17 +37,36 @@ type (
 		Images []netEaseImage `json:"img"`
 		Body   string         `json:"body"`
 	}
+
+	subscriber struct {
+		UserID int64  `json:"user_id"`
+		PostID string `json:"post_id"`
+	}
 )
 
 const (
 	linkFormat   = "/02"
 	errorMessage = "Something went wrong."
 	helpMessage  = `You can:
-/list recent posts`
+
+/list recent posts
+/subscribe for new posts
+/unsubscribe if you've subscribed`
 )
 
 var (
 	netEaseTimeZone = time.FixedZone("CST", 60*60*8)
+
+	dataFile string
+
+	botdata struct {
+		TotalLikes  int          `json:"total_likes"`
+		Subscribers []subscriber `json:"subscribers"`
+	}
+
+	bot *tgbotapi.BotAPI
+
+	latestPosts netEasePosts
 )
 
 func (posts netEasePosts) String() (out string) {
@@ -83,7 +104,7 @@ func getPosts() (netEasePosts, error) {
 	return posts.Posts, nil
 }
 
-func getPost(id string, chatId int64) (messages []tgbotapi.Chattable, _err error) {
+func getPost(id string) (messages [][2]string, _err error) {
 	resp, err := http.Get(fmt.Sprintf("https://c.m.163.com/nc/article/%s/full.html", id))
 	if _err = err; _err != nil {
 		return
@@ -117,19 +138,7 @@ func getPost(id string, chatId int64) (messages []tgbotapi.Chattable, _err error
 			if !ok {
 				break
 			}
-			if strings.HasSuffix(imageUrl, "gif") {
-				msg := tgbotapi.NewDocumentUpload(chatId, nil)
-				msg.FileID = imageUrl
-				msg.UseExisting = true
-				msg.Caption = imageCaption
-				messages = append(messages, msg)
-			} else {
-				msg := tgbotapi.NewPhotoUpload(chatId, nil)
-				msg.FileID = imageUrl
-				msg.UseExisting = true
-				msg.Caption = imageCaption
-				messages = append(messages, msg)
-			}
+			messages = append(messages, [2]string{imageUrl, imageCaption})
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			f(c)
@@ -140,8 +149,132 @@ func getPost(id string, chatId int64) (messages []tgbotapi.Chattable, _err error
 	return
 }
 
+func sendPostsToSubscribers() {
+	var err error
+	latestPosts, err = getPosts()
+	if err != nil {
+		log.Panic(err)
+		return
+	}
+	diff := time.Now().Sub(latestPosts[0].CreatedAt.Time)
+	if diff < 0 || diff > 10*time.Minute {
+		return
+	}
+	allSent := true
+	for i := range botdata.Subscribers {
+		if botdata.Subscribers[i].PostID != latestPosts[0].ID {
+			allSent = false
+		}
+	}
+	if allSent {
+		return
+	}
+	messages, err := getPost(latestPosts[0].ID)
+	if err != nil {
+		log.Panic(err)
+		return
+	}
+	for i := range botdata.Subscribers {
+		if botdata.Subscribers[i].PostID == latestPosts[0].ID {
+			continue
+		}
+		err = sendMessages(messages, botdata.Subscribers[i].UserID)
+		if err == nil {
+			botdata.Subscribers[i].PostID = latestPosts[0].ID
+			write()
+		} else {
+			log.Println(err)
+		}
+	}
+}
+
+func sendMessages(messages [][2]string, target int64) (err error) {
+	for _, msg := range messages {
+		imageUrl, imageCaption := msg[0], msg[1]
+		if strings.HasSuffix(imageUrl, "gif") {
+			msg := tgbotapi.NewDocumentUpload(target, nil)
+			msg.FileID = imageUrl
+			msg.UseExisting = true
+			msg.Caption = imageCaption
+			err = sendMessage(msg)
+		} else {
+			msg := tgbotapi.NewPhotoUpload(target, nil)
+			msg.FileID = imageUrl
+			msg.UseExisting = true
+			msg.Caption = imageCaption
+			err = sendMessage(msg)
+		}
+		if err != nil {
+			return
+		}
+	}
+	sendMessage(tgbotapi.NewMessage(target, "End of the post. You can /list other posts or visit /help."))
+	return
+}
+
+func sendMessage(msg tgbotapi.Chattable) (err error) {
+	for i := 0; i < 3; i++ {
+		_, err = bot.Send(msg)
+		if err == nil {
+			return
+		}
+	}
+	return
+}
+
+func read() error {
+	defer func() {
+		if botdata.Subscribers == nil {
+			botdata.Subscribers = []subscriber{}
+		}
+	}()
+	b, err := ioutil.ReadFile(dataFile)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &botdata)
+}
+
+func write() error {
+	b, err := json.MarshalIndent(botdata, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(dataFile, b, 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func subscribe(target int64, isSubscribe bool) (ok bool) {
+	for i := len(botdata.Subscribers) - 1; i > -1; i-- {
+		if botdata.Subscribers[i].UserID != target {
+			continue
+		}
+		if isSubscribe {
+			return
+		} else {
+			botdata.Subscribers = append(botdata.Subscribers[:i], botdata.Subscribers[i+1:]...)
+			ok = true
+		}
+	}
+	if isSubscribe {
+		botdata.Subscribers = append(botdata.Subscribers, subscriber{UserID: target})
+		ok = true
+	}
+	write()
+	return
+}
+
+func init() {
+	flag.StringVar(&dataFile, "data", "botdata.json", "data file location")
+}
+
 func main() {
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOTAPI"))
+	flag.Parse()
+
+	var err error
+	bot, err = tgbotapi.NewBotAPI(os.Getenv("BOTAPI"))
 	if err != nil {
 		log.Panic(err)
 	}
@@ -149,15 +282,19 @@ func main() {
 
 	log.Printf("Started %s", bot.Self.UserName)
 
+	read()
+
+	go func() {
+		for {
+			sendPostsToSubscribers()
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 
 	updates, err := bot.GetUpdatesChan(u)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	posts, err := getPosts()
 	if err != nil {
 		log.Panic(err)
 	}
@@ -173,8 +310,22 @@ func main() {
 
 		switch update.Message.Text {
 		case "/list":
-			bot.Send(tgbotapi.NewMessage(target, posts.String()))
+			bot.Send(tgbotapi.NewMessage(target, latestPosts.String()))
+		case "/subscribe":
+			if subscribe(target, true) {
+				bot.Send(tgbotapi.NewMessage(target, "Subscribed!"))
+			} else {
+				bot.Send(tgbotapi.NewMessage(target, "You've already subscribed. No need to subscribe again."))
+			}
+		case "/unsubscribe":
+			if subscribe(target, false) {
+				bot.Send(tgbotapi.NewMessage(target, "Unsubscribed!"))
+			} else {
+				bot.Send(tgbotapi.NewMessage(target, "You don't have any subscription to unsubscribe."))
+			}
 		case "\xF0\x9F\x91\x8D":
+			botdata.TotalLikes += 1
+			write()
 			bot.Send(tgbotapi.NewMessage(target, "Thank you."))
 		default:
 			t, err := time.Parse(linkFormat, update.Message.Text)
@@ -182,27 +333,23 @@ func main() {
 				bot.Send(tgbotapi.NewMessage(target, helpMessage))
 				break
 			}
-			for _, post := range posts {
+			match := false
+			for _, post := range latestPosts {
 				if post.CreatedAt.Day() != t.Day() {
 					continue
 				}
-				messages, err := getPost(post.ID, target)
-				if err != nil {
+				match = true
+				messages, err := getPost(post.ID)
+				if err == nil {
+					sendMessages(messages, target)
+				} else {
 					log.Println(err)
 					bot.Send(tgbotapi.NewMessage(target, errorMessage))
-					break
-				}
-				for _, msg := range messages {
-					for i := 0; i < 3; i++ {
-						_, err := bot.Send(msg)
-						if err == nil {
-							break
-						} else {
-							log.Println(err)
-						}
-					}
 				}
 				break
+			}
+			if !match {
+				bot.Send(tgbotapi.NewMessage(target, "No such post."))
 			}
 		}
 	}
