@@ -203,9 +203,7 @@ func sendMessages(messages [][2]string, target int64) (err error) {
 			}
 		}
 		if err != nil {
-			bot.Send(tgbotapi.NewMessage(target, "Error: "+err.Error()))
-			log.Println(err)
-			return
+			bot.Send(tgbotapi.NewMessage(target, "Error: "+err.Error()+"\n\n"+imageUrl))
 		}
 	}
 	bot.Send(tgbotapi.NewMessage(target, "End of the post. You can /list other posts or visit /help."))
