@@ -92,7 +92,7 @@ func (t *netEaseTime) UnmarshalJSON(data []byte) error {
 
 func getPosts() (netEasePosts, error) {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", "https://c.m.163.com/nc/subscribe/list/T1454661781964/all/0-25.html", nil)
+	req, err := http.NewRequest("GET", "https://c.m.163.com/nc/subscribe/list/T1454661781964/all/0-20.html", nil)
 	if err != nil {
 		return nil, err
 	}
