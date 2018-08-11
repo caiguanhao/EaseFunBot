@@ -46,6 +46,7 @@ type (
 )
 
 const (
+	userAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.99 Safari/537.36"
 	linkFormat   = "/02"
 	errorMessage = "Something went wrong."
 	helpMessage  = `You can:
@@ -90,7 +91,13 @@ func (t *netEaseTime) UnmarshalJSON(data []byte) error {
 }
 
 func getPosts() (netEasePosts, error) {
-	resp, err := http.Get("https://c.m.163.com/nc/subscribe/list/T1454661781964/all/0-25.html")
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", "https://c.m.163.com/nc/subscribe/list/T1454661781964/all/0-25.html", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +114,13 @@ func getPosts() (netEasePosts, error) {
 }
 
 func getPost(id string) (messages [][2]string, _err error) {
-	resp, err := http.Get(fmt.Sprintf("https://c.m.163.com/nc/article/%s/full.html", id))
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://c.m.163.com/nc/article/%s/full.html", id), nil)
+	if _err = err; _err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
 	if _err = err; _err != nil {
 		return
 	}
